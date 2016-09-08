@@ -1,0 +1,312 @@
+#Project de calcul de LGD
+
+##### Conditions initiales #####
+rm(list = ls())
+T=1.5
+s=0
+Sigma=.15
+r=0
+HairC=.91
+c <- 0
+IV <- 1 #indexed valuation
+PR <- 1 #Probabilité de repossession en cas de défaut
+c <- 0 #perte associée au retour en sain
+
+############ Paramètres d'entrée #####
+LTV = seq(0,1.6,.01)
+
+##### Fonction globale #####
+
+cond.mean.norm = function(x,y,m=0,s=1) { 
+  m * (pnorm(y,m,s) - pnorm(x,m,s)) - s^2 * (dnorm(y,m,s) - dnorm(x,m,s)) 
+} 
+cond.mean.truncnorm = function(x, y, m=0, s=1, lower = -Inf, upper = +Inf)
+{
+  cond.mean.norm(x,y,m,s) / (pnorm(upper,m,s) - pnorm(lower,m,s))
+}
+
+calc.LGL = function(ltv.sales =.8, sales= HairC,sales.std=Sigma,method =c("ecb","xgf1","xgf2","determinist","bs")){
+  method = match.arg(method)
+  
+  if (method == "determinist"){
+    pmax(0,1 - sales / ltv.sales)
+  }
+  else if (method == "ecb"){
+    pnorm(ltv.sales, sales, sales.std) -
+      (
+        sales*(pnorm(sales / sales.std , 0, 1) - 
+                 pnorm((sales-ltv.sales) / sales.std , 0, 1)) +
+          sales.std^2 * (dnorm(0,sales,sales.std) -
+                           dnorm(ltv.sales,sales,sales.std))
+      ) / ltv.sales
+  }
+  else if (method == "xgf1"){
+    pnorm(ltv.sales, sales, sales.std) -
+      cond.mean.norm(0, ltv.sales, sales, sales.std) / ltv.sales
+  }
+  else if (method == "xgf2"){
+    pnorm(ltv.sales, sales, sales.std) -
+      cond.mean.truncnorm(0, ltv.sales, sales, sales.std) / ltv.sales
+  }
+  else if (method == "bs") # otpion pu BlackScholes formula, with r=0, s=0, T=1
+    {
+    ltv.sales = ltv.sales / sales
+      d1 = (log(1/ltv.sales) + (sales.std^2)/2) / sales.std
+      d2 = d1 - sales.std
+      pnorm(-d2) - pnorm(-d1) / ltv.sales
+  }
+}
+
+############    Modèle déterministe #####
+Max0 <- function(x){
+  max(x,0)
+}
+
+fctMax <- function(ltv,H){
+  tmp=1-H/ltv
+  sol <- Max0(tmp)
+  sol
+}
+model_1 <- sapply(LTV, fctMax, H=HairC)
+model_1 <- model_1*PR
+plot(model_1)
+
+###########    Modèle de Leow ########
+fctLeow <- function(ltv,Sig=Sigma,H=HairC){
+  D <- (ltv-H)/Sig
+  sol <- (Sig*D*pnorm(D) - ( - Sig * dnorm(D) ))/ltv
+  sol
+}
+fctLeow(0.98)
+model_21 <- sapply(LTV,fctLeow,Sig=Sigma,H=HairC)
+plot(model_21)
+#df <- data.frame(model_21)
+
+
+#Approche avec repossession
+
+fctLeow2 <- function(ltv,Sig,H){
+  Sol <- (fctLeow(ltv,Sig,H)*IV*PR) + (c*(1-PR))
+  Sol
+}
+fctLeow2(.4,Sig = Sigma,H=HairC)
+model_22 <- sapply(LTV,fctLeow2,Sig=Sigma,H=HairC)
+#df <- merge(df,data.frame(model_22))
+#temp <- cbind(model_22, model_21,model_1)
+
+########  Modèle de Black & Scholes ######
+
+#Approche dévelopé dans l'article de Bardhan et al.
+fctBS <- function(ltv,Sig,H){
+  d11 <- (log(1/ltv) + (r-s+(Sig**2)/2))*T/(Sig*sqrt(T))
+  d11
+  d12 <- (log(H/ltv) + (r-s+(Sig**2)/2))*T/(Sig*sqrt(T)) # ici on utilise le haircut
+  d12
+  # en effet : K1 = H * K2
+  # donc VO/K1 = ltv et VO/K2 = ltv/H
+  d21 <- d11 - Sig*sqrt(T)
+  d21
+  d22 <- d12 - Sig*sqrt(T)
+  d22
+  sol <- exp(-r*T)*pnorm(-d21) - exp(-s*T)*pnorm(-d11)*1/ltv - (H/ltv*exp(-r*T)*pnorm(-d22) - exp(-s*T)*pnorm(-d12))
+  sol
+}
+#fctBS(1.02)
+model_31 <- sapply(LTV,fctBS,Sig=Sigma,H=HairC)
+model_31 <- sapply(model_31,Max0)
+plot(model_31)
+
+#Approche simplifié, modèle Turquie
+fctBS2 <- function(ltv,Sig){
+  d1 <- (log(1/ltv) + (r-s+(Sig**2)/2))*T/(Sig*sqrt(T))
+  d1
+  d2 <- d1 - Sig*sqrt(T)
+  d2
+  sol <- exp(-r*T)*pnorm(-d2) - exp(-s*T)*pnorm(-d1)*1/ltv
+  sol
+}
+#fctBS2(1.02)
+model_32 <- sapply(LTV/HairC,fctBS2,Sig=Sigma)
+model_32 <- sapply(model_32,Max0)
+model_32 <- model_32*PR
+plot(model_32)
+
+###### ANALYSE DES RÉSULTATS ######
+
+#plages de résultats
+#Tab <- cbind(model_1,model_21,model_22,model_31,model_32)
+#Tab
+#tmp <- data.frame(Tab)
+test <- sapply(LTV, calc.LGL, method = "determinist")
+
+# tracé des courbes
+plot(x=LTV,y=sapply(LTV, calc.LGL, method = "determinist"), ylab="Modèle déterministe")
+plot(x=LTV,y=model_21,ylab="Modèle de repossession")
+plot(x=LTV,y=model_22,ylab="Modèle de repossession 2")
+plot(x=LTV,y=model_31,ylab="Modèle de Black Scholes Haircut")
+plot(x=LTV,y=model_32,ylab="Modèle de Black Scholes")
+# Plot global
+plot(x=LTV,y=model_1,ylab="Superposition des courbes",col="green", lwd=5)
+lines(x=LTV,y=model_21,col="Red" ,lwd =4)
+lines(x=LTV,y=model_31,col="orange", lwd=4)
+lines(x=LTV,y=model_32,col="blue", lwd=4)
+#legende
+legend("topleft",
+       legend = c("Déterministe","Repossession","Black & Scholes 1","Black & Scholes 2"),
+       col=c("green","red","orange","blue"),
+       lty=c(1,1,1,1),
+       lwd=c(2.5,2.5,2.5,2.5)
+)
+
+# entre le modèle déterministe et le modèle optionel
+plot(x=LTV,y=model_21,ylab="Superposition des courbes",col="green", lwd=5)
+lines(x=LTV,y=model_32,col="blue", lwd=4)
+temp <- model_21-model_32
+plot(temp,x=LTV,type="l")
+test <- max(abs(temp))
+which.max(abs(temp))
+LTV[which.max(abs(temp))]
+
+#####Variation des sigma####
+tempSig = seq(.01,.8,.01)
+test <- matrix(nrow=10,ncol=5)
+for (j in 1:5){
+  t <- (j-1)*10
+  for (i in 1:10){
+    t <- t+1
+    test[i,j]=tempSig[t]
+  }
+}
+length(tempSig)
+
+## Modèle optionel
+model_OptSigm <- list()
+for (i in 1:length(tempSig)){
+  #print(tempSig[i])
+  model_OptSigm[[i]] = sapply(LTV/HairC,fctBS2,Sig=tempSig[i])
+}
+model_OptSigm[1]
+result <- matrix(unlist(model_OptSigm), byrow=TRUE, nrow=length(model_OptSigm) )
+#plot
+length(unlist(model_OptSigm[1]))
+plot(x=LTV,y=unlist(model_1),ylab="LGD",col="green", lwd=5)
+lines(x=LTV,y=unlist(model_OptSigm[20]),ylab="LGD",col="red", lwd=5)
+for (i in 5:length(tempSig)) {
+  lines(x=LTV,y=unlist(model_OptSigm[i]), lwd=1)
+}
+
+## Modèle Repossession
+model_Repo <- list()
+for (i in 1:length(tempSig)){ 
+  #print(tempSig[i])
+  model_Repo[[i]] = sapply(LTV,calc.LGL,sales.std=tempSig[i],sales=HairC,method="xgf1")
+}
+#plot
+plot(x=LTV,y=unlist(model_1),ylab="LGD",col="green", lwd=5)
+lines(x=LTV,y=unlist(model_21),ylab="LGD",col="red", lwd=5)
+for (i in 5:length(tempSig)) {
+  lines(x=LTV,y=unlist(model_Repo[i]), lwd=1)
+}
+
+#plot global
+plot(x=LTV,y=unlist(model_1),ylab="LGD",col="green", lwd=5)
+lines(x=LTV,y=unlist(model_21),ylab="LGD",col="red", lwd=5)
+lines(x=LTV,y=unlist(model_32),ylab="LGD",col="Blue", lwd=5)
+for (i in 30:length(tempSig)) {
+  lines(x=LTV,y=unlist(model_Repo[i]), lwd=1, col = "magenta")}
+for (i in 30:length(tempSig)) {
+  lines(x=LTV,y=unlist(model_OptSigm[i]), lwd=1, col="turquoise")}
+
+### Variation des Haircut #####
+tempH = seq(.4,1,.01)
+test <- matrix(nrow=10,ncol=5)
+for (j in 1:5){
+  t <- (j-1)*10
+  for (i in 1:10){
+    t <- t+1
+    test[i,j]=tempSig[t]
+  }
+}
+length(tempH)
+
+## Modèle optionel
+model_OptH <- list()
+for (i in 1:length(tempH)){
+  #print(tempSig[i])
+  model_OptH[[i]] = sapply(LTV/tempH[i],fctBS2,Sig=Sigma)
+}
+model_OptH[1]
+#plot
+length(unlist(model_OptH[1]))
+plot(x=LTV,y=unlist(model_1),ylab="LGD",col="green", lwd=5)
+lines(x=LTV,y=unlist(model_32),ylab="LGD",col="red", lwd=5)
+for (i in 5:length(tempH)) {
+  lines(x=LTV,y=unlist(model_OptH[i]), lwd=1)
+}
+
+## Modèle Repossession
+model_RepoH <- list()
+for (i in 1:length(tempH)){
+  #print(tempSig[i])
+  model_RepoH[[i]] = sapply(LTV,fctLeow,Sig=Sigma,H=tempH[i])
+}
+#plot
+plot(x=LTV,y=unlist(model_1),ylab="LGD",col="green", lwd=5)
+lines(x=LTV,y=unlist(model_21),ylab="LGD",col="red", lwd=5)
+for (i in 5:length(tempH)) {
+  lines(x=LTV,y=unlist(model_RepoH[i]), lwd=1)
+}
+
+#Modèle déterministe
+model_Deter_H <- list()
+for (i in 1:length(tempH)){
+  model_Deter_H[[i]] = sapply(LTV,fctMax,H=tempH[i])
+}
+#plot
+plot(x=LTV,y=unlist(model_1),ylab="LGD",col="green", lwd=5)
+#lines(x=LTV,y=unlist(model_22),ylab="LGD",col="red", lwd=5)
+for (i in 5:length(tempH)) {
+  lines(x=LTV,y=unlist(model_Deter_H[i]), lwd=1)
+}
+
+
+#plot avec tout dedans
+plot(x=LTV,y=unlist(model_1),ylab="LGD",col="green", lwd=5, xlim = c(.6,1.2), ylim = c(0,.2))
+#lines(x=LTV,y=unlist(model_22),ylab="LGD",col="red", lwd=5)
+for (i in 50:length(tempH)) {
+  lines(x=LTV,y=unlist(model_Deter_H[i]), lwd=1, col="yellowgreen")}
+#modèle optionnel
+lines(x=LTV,y=unlist(model_32),ylab="LGD",col="Blue", lwd=5)
+for (i in 50:length(tempH)) {
+  lines(x=LTV,y=unlist(model_OptH[i]), lwd=1, col="turquoise")}
+#modèle de décote
+lines(x=LTV,y=unlist(model_21),ylab="LGD",col="red", lwd=5)
+for (i in 50:length(tempH)) {
+  lines(x=LTV,y=unlist(model_RepoH[i]), lwd=1, col="magenta")}
+
+#### Autre ####
+
+
+model_xiao1 <- sapply(LTV, calc.LGL, method = "ecb", sales.std=.1, sales = .9)
+model_xiao3 <- sapply(LTV, calc.LGL, method = "xgf1",sales.std=.1,sales = .9)
+model_xiao2 <- sapply(LTV, calc.LGL, method = "xgf2",sales.std=.1, sales = .9)
+plot(model_xiao2,x = LTV)
+lines(y=model_xiao2,x=LTV, col="blue")
+lines(y=model_xiao3,x=LTV, col="red")
+
+
+# entre le modèle déterministe et le modèle de décote
+plot(x=LTV,y=model_1,ylab="Superposition des courbes",col="green", lwd=5)
+lines(x=LTV,y=model_21,col="red", lwd=4)
+temp <- (model_1/model_21)
+plot(temp,x=LTV,xlim = c(.8,1.6),type="p")
+temp
+max(temp)
+
+# décote
+x1 = 100
+x2 = H*x1
+y1 = 100
+y2 = y1 + T
+plot(x = c(x1,x2), y = c(y1,y2), type="c", ylab="Prix du collatéral", xlab="Temps")
+lines(x= c(x1,95),y=c(y1,y2))
